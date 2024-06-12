@@ -1,112 +1,65 @@
-from redbot.core import commands
+from redbot.core import commands, Config
 import discord
-from discord.ext.commands.converter import ColorConverter
 
-class RoleManagement(commands.Cog):
+class RolePingControl(commands.Cog):
+    """A cog to control who can ping specific roles based on their roles."""
+
     def __init__(self, bot):
         self.bot = bot
+        self.config = Config.get_conf(self, identifier=1234567890)
+        self.config.register_guild(control_roles={})
 
-    @commands.command()
     @commands.guild_only()
-    @commands.has_permissions(manage_roles=True)
-    async def createrole(self, ctx, name: str, color: str = None, *perms: str):
-        """Create a new role with the given name, color, and permissions.
-        
-        Example: !createrole "New Role" #FF5733 kick_members ban_members read_messages send_messages
-        """
-        guild = ctx.guild
-        existing_role = discord.utils.get(guild.roles, name=name)
-        if existing_role:
-            await ctx.send(f"A role with the name '{name}' already exists.")
+    @commands.admin_or_permissions(manage_roles=True)
+    @commands.group()
+    async def pingcontrol(self, ctx):
+        """Group command for ping control settings."""
+        pass
+
+    @pingcontrol.command()
+    async def setcontrol(self, ctx, control_role: discord.Role, target_role: discord.Role):
+        """Set a role that is allowed to ping another role."""
+        async with self.config.guild(ctx.guild).control_roles() as control_roles:
+            control_roles[str(target_role.id)] = control_role.id
+            await ctx.send(f"Role {control_role.name} can now ping {target_role.name}.")
+
+    @pingcontrol.command()
+    async def removecontrol(self, ctx, *target_roles: discord.Role):
+        """Remove the control restriction for one or more target roles."""
+        async with self.config.guild(ctx.guild).control_roles() as control_roles:
+            removed_roles = []
+            not_found_roles = []
+            for target_role in target_roles:
+                if str(target_role.id) in control_roles:
+                    del control_roles[str(target_role.id)]
+                    removed_roles.append(target_role.name)
+                else:
+                    not_found_roles.append(target_role.name)
+
+            if removed_roles:
+                await ctx.send(f"Control restriction removed for: {', '.join(removed_roles)}.")
+            if not_found_roles:
+                await ctx.send(f"No control restriction found for: {', '.join(not_found_roles)}.")
+
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        if message.author.bot:
             return
 
-        # Convert color from hex string to discord.Color
-        try:
-            if color:
-                color = await ColorConverter().convert(ctx, color)
-            else:
-                color = discord.Color.default()
-        except commands.BadArgument:
-            await ctx.send("Invalid color format. Use a hex color code like #FF5733.")
+        guild = message.guild
+        if guild is None:
             return
 
-        # Create a discord.Permissions object from the provided perms
-        permissions = discord.Permissions.none()
-        valid_permissions = [perm for perm in dir(discord.Permissions) if not perm.startswith('_')]
+        control_roles = await self.config.guild(guild).control_roles()
+        mentioned_roles = message.role_mentions
 
-        for perm in perms:
-            if perm in valid_permissions:
-                setattr(permissions, perm, True)
-            else:
-                await ctx.send(f"Invalid permission: {perm}")
-                return
+        for target_role in mentioned_roles:
+            if str(target_role.id) in control_roles:
+                control_role_id = control_roles[str(target_role.id)]
+                control_role = guild.get_role(control_role_id)
+                
+                if control_role not in message.author.roles:
+                    await message.delete()
+                    await message.channel.send(f"{message.author.mention}, you are not allowed to ping {target_role.name}.", delete_after=5)
+                    break
 
-        # Create the role
-        new_role = await guild.create_role(name=name, color=color, permissions=permissions)
-        await ctx.send(f"Role '{new_role.name}' has been created with color {color} and permissions {', '.join(perms)}.")
-
-    @commands.command()
-    @commands.guild_only()
-    @commands.has_permissions(manage_roles=True)
-    async def deleterole(self, ctx, *, name: str):
-        """Delete a role with the given name."""
-        guild = ctx.guild
-        role_to_delete = discord.utils.get(guild.roles, name=name)
-        if not role_to_delete:
-            await ctx.send(f"No role with the name '{name}' found.")
-        else:
-            await role_to_delete.delete()
-            await ctx.send(f"Role '{name}' has been deleted.")
-
-    @commands.command()
-    @commands.guild_only()
-    async def listroles(self, ctx):
-        """List all roles in the server."""
-        roles = ctx.guild.roles
-        role_names = [role.name for role in roles]
-        await ctx.send(f"Roles in this server: {', '.join(role_names)}")
-
-    @commands.command()
-    @commands.guild_only()
-    @commands.has_permissions(manage_roles=True)
-    async def addperm(self, ctx, role: discord.Role, *perms: str):
-        """Add permissions to a role.
-        
-        Example: !addperm "Role Name" kick_members ban_members read_messages send_messages
-        """
-        permissions = role.permissions
-        valid_permissions = [perm for perm in dir(discord.Permissions) if not perm.startswith('_')]
-
-        for perm in perms:
-            if perm in valid_permissions:
-                setattr(permissions, perm, True)
-            else:
-                await ctx.send(f"Invalid permission: {perm}")
-                return
-
-        await role.edit(permissions=permissions)
-        await ctx.send(f"Permissions {', '.join(perms)} have been added to the role '{role.name}'.")
-
-    @commands.command()
-    @commands.guild_only()
-    @commands.has_permissions(manage_roles=True)
-    async def removeperm(self, ctx, role: discord.Role, *perms: str):
-        """Remove permissions from a role.
-        
-        Example: !removeperm "Role Name" kick_members ban_members read_messages send_messages
-        """
-        permissions = role.permissions
-        valid_permissions = [perm for perm in dir(discord.Permissions) if not perm.startswith('_')]
-
-        for perm in perms:
-            if perm in valid_permissions:
-                setattr(permissions, perm, False)
-            else:
-                await ctx.send(f"Invalid permission: {perm}")
-                return
-
-        await role.edit(permissions=permissions)
-        await ctx.send(f"Permissions {', '.join(perms)} have been removed from the role '{role.name}'.")
-
-def setup(bot):
-    bot.add_cog(RoleManagement(bot))
